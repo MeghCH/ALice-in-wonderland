@@ -1,0 +1,7 @@
+requests
+argparse
+nltk
+spacy
+gensim
+sumy
+scikit-learn

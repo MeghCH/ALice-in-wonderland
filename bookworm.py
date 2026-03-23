@@ -64,6 +64,7 @@ parser.add_argument("--card", type=int)
 args = parser.parse_args()
 
 def lexdiv(book_id):
+
     text = downclean(book_id)
     tokens = nltk.word_tokenize(text)
     tokens = [t for t in tokens if t.isalpha()]
@@ -147,6 +148,7 @@ BOOKS = {
     164: "Twenty Thousand Leagues under the Sea",
     345: "Dracula",
     68283: "The Call of Cthulhu"
+
 }
 
 def similar(book_id):

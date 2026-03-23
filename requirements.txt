@@ -1,0 +1,6 @@
+requests
+nltk
+spacy
+gensim
+sumy
+scikit-learn

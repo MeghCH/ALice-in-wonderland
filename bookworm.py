@@ -1,6 +1,7 @@
 import requests
 import os
 import argparse
+import json
 import nltk
 from collections import Counter
 import spacy
@@ -12,46 +13,52 @@ from sumy.summarizers.text_rank import TextRankSummarizer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-nltk.download('punkt')
-nltk.download('stopwords')
-nltk.download('wordnet')
-nltk.download('punkt_tab')
+nltk.download("punkt")
+nltk.download("stopwords")
+nltk.download("wordnet")
+nltk.download("punkt_tab")
+
+STORAGE_DIR = "./storage"
+os.makedirs(STORAGE_DIR, exist_ok=True)
+
 
 def clean_text(text):
     start = "*** START OF THE PROJECT GUTENBERG EBOOK"
     end = "*** END OF THE PROJECT GUTENBERG EBOOK"
-    
+
     if start in text:
         text = text.split(start)[1]
     if end in text:
         text = text.split(end)[0]
-    
+
     return text.strip()
 
-# Téléchargement des livres + nettoyage du header & footer
+
 def downclean(book_id):
     file_name = f"{book_id}.txt"
-    # Si le fichier existe -> lire depuis le disque 
+    # Si le fichier existe -> lire depuis le disque
     if os.path.exists(file_name):
         with open(file_name, "r") as f:
             return f.read()
-    lien = requests.get (f"https://www.gutenberg.org/files/{book_id}/{book_id}-0.txt")
+    lien = requests.get(f"https://www.gutenberg.org/files/{book_id}/{book_id}-0.txt")
     if lien.status_code == 200:
         texte = clean_text(lien.text)
         with open(file_name, "w") as f:
             f.write(texte)
         return texte
-    # sinon -> télécharger -> nettoyer -> sauvegarder -> retourner
+
     else:
-        lien_bis = requests.get (f"https://www.gutenberg.org/files/{book_id}/{book_id}.txt")
+        lien_bis = requests.get(
+            f"https://www.gutenberg.org/files/{book_id}/{book_id}.txt"
+        )
         if lien_bis.status_code == 200:
             texte = clean_text(lien_bis.text)
             with open(file_name, "w") as f:
                 f.write(texte)
             return texte
         else:
-            return None 
-        
+            return None
+
 
 # CLI
 parser = argparse.ArgumentParser()
@@ -63,67 +70,176 @@ parser.add_argument("--similar", type=int)
 parser.add_argument("--card", type=int)
 args = parser.parse_args()
 
-def lexdiv(book_id):
-    text = downclean(book_id)
-    tokens = nltk.word_tokenize(text)
-    tokens = [t for t in tokens if t.isalpha()]
-    tokens = [t.lower() for t in tokens]
-    tok = len(tokens)
-    typ = len(set(tokens))
-    counts = Counter(tokens)
-    hap = 0
-    for word in counts:
-        if counts[word] == 1:
-            hap += 1
-    ttr = typ/tok
-    mwl = sum(len(word) for word in tokens)/tok
-    mwf = tok/typ
-    return {
-    "tok": tok,
-    "typ": typ,
-    "hap": hap,
-    "ttr": ttr,
-    "mwl": mwl,
-    "mwf": mwf
-}
 
-def topics(book_id):
-    text = downclean(book_id)
-    tokens = nltk.word_tokenize(text.lower())
-    stop_words = set(nltk.corpus.stopwords.words('english'))
-    tokens = [t for t in tokens if t.isalpha() and t not in stop_words]
+def get_storage_path(book_id, operation):
+    return os.path.join(STORAGE_DIR, f"{book_id}_{operation}.json")
 
-    dictionary = corpora.Dictionary([tokens])
-    corpus = [dictionary.doc2bow(tokens)]
-    lda = LdaModel(corpus, num_topics=4, id2word=dictionary)
 
-    result = {}
-    for i in range(4):
-        words = [word for word, score in lda.show_topic(i, topn=10)]
-        result[i + 1] = words
+def load_or_compute(book_id, operation, compute_func):
+    storage_path = get_storage_path(book_id, operation)
+    if os.path.exists(storage_path):
+        with open(storage_path, "r") as f:
+            return json.load(f)
+    result = compute_func(book_id)
+    with open(storage_path, "w") as f:
+        json.dump(result, f)
     return result
 
 
+def lexdiv(book_id):
+    def compute_lexdiv(book_id):
+        text = downclean(book_id)
+        if text is None:
+            return None
+        tokens = nltk.word_tokenize(text)
+        tokens = [t for t in tokens if t.isalpha()]
+        tokens = [t.lower() for t in tokens]
+        tok = len(tokens)
+        typ = len(set(tokens))
+        counts = Counter(tokens)
+        hap = 0
+        for word in counts:
+            if counts[word] == 1:
+                hap += 1
+        ttr = typ / tok
+        mwl = sum(len(word) for word in tokens) / tok
+        mwf = tok / typ
+        return {"tok": tok, "typ": typ, "hap": hap, "ttr": ttr, "mwl": mwl, "mwf": mwf}
+
+    return load_or_compute(book_id, "lexdiv", compute_lexdiv)
+
+
+def split_into_sections(text):
+    sections = []
+    current_section = []
+
+    chapter_patterns = [
+        "CHAPTER",
+        "Chapter",
+        "CHAP.",
+        "Chap.",
+        "SCENE",
+        "Scene",
+        "SC.",
+        "Sc.",
+        "BOOK",
+        "Book",
+        "PART",
+        "Part",
+        "SECTION",
+        "Section",
+        "ACT",
+        "Act",
+    ]
+
+    for line in text.split("\n"):
+        line = line.strip()
+        if line and any(line.startswith(pattern) for pattern in chapter_patterns):
+            if current_section:
+                sections.append(" ".join(current_section))
+                current_section = []
+        elif line:
+            current_section.append(line)
+
+    if current_section:
+        sections.append(" ".join(current_section))
+
+    return sections if sections else [text]
+
+
+def topics(book_id):
+    def compute_topics(book_id):
+        text = downclean(book_id)
+        if text is None:
+            return None
+
+        sections = split_into_sections(text)
+        result = {}
+
+        for i, section in enumerate(sections[:10]):
+            tokens = nltk.word_tokenize(section.lower())
+            stop_words = set(nltk.corpus.stopwords.words("english"))
+            tokens = [t for t in tokens if t.isalpha() and t not in stop_words]
+
+            if tokens:
+                word_freq = Counter(tokens)
+                top_words = [word for word, _ in word_freq.most_common(10)]
+                result[i + 1] = top_words
+
+        return result
+
+    return load_or_compute(book_id, "topics", compute_topics)
+
+
+def similar(book_id):
+    def compute_similar(book_id):
+        texts = []
+        id = []
+
+        for t in BOOKS:
+            text = downclean(t)
+            if text:
+                texts.append(text)
+                id.append(t)
+
+        vectorizer = TfidfVectorizer()
+        matrix = vectorizer.fit_transform(texts)
+        idx = id.index(book_id)
+        scores = cosine_similarity(matrix[idx], matrix).flatten()
+        ranked = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+
+        result = []
+        for i in ranked:
+            if id[i] != book_id:
+                result.append(BOOKS[id[i]])
+            if len(result) == 5:
+                break
+        return result
+
+    return load_or_compute(book_id, "similar", compute_similar)
+
+
 def entities(book_id):
-    nlp = spacy.load("en_core_web_sm")
-    nlp.max_length = 2000000
-    text = downclean(book_id)
-    doc = nlp(text)
-    characters = []
-    locations = []
-    for ent in doc.ents:
-        if ent.label_ == "PERSON":
-            characters.append(ent.text)
-        elif ent.label_ in ["GPE", "LOC"]:
-            locations.append(ent.text)
-    return {"characters": list(set(characters)), "locations": list(set(locations))}
+    def compute_entities(book_id):
+        text = downclean(book_id)
+        if text is None:
+            return None
+
+        try:
+            import spacy
+
+            nlp = spacy.load("en_core_web_sm")
+            nlp.max_length = 2000000
+            doc = nlp(text)
+            characters = []
+            locations = []
+            for ent in doc.ents:
+                if ent.label_ == "PERSON":
+                    characters.append(ent.text)
+                elif ent.label_ in ["GPE", "LOC"]:
+                    locations.append(ent.text)
+            return {
+                "characters": list(set(characters)),
+                "locations": list(set(locations)),
+            }
+        except:
+            return {"characters": [], "locations": []}
+
+    return load_or_compute(book_id, "entities", compute_entities)
+
 
 def summarize(book_id):
-    text = downclean(book_id)
-    parser = PlaintextParser.from_string(text, Tokenizer("english"))
-    summarizer = TextRankSummarizer()
-    summary = summarizer(parser.document, sentences_count=5)
-    return " ".join([str(sentence) for sentence in summary])
+    def compute_summarize(book_id):
+        text = downclean(book_id)
+        if text is None:
+            return None
+        parser = PlaintextParser.from_string(text, Tokenizer("english"))
+        summarizer = TextRankSummarizer()
+        summary = summarizer(parser.document, sentences_count=5)
+        return " ".join([str(sentence) for sentence in summary])
+
+    return load_or_compute(book_id, "summarize", compute_summarize)
+
 
 BOOKS = {
     11: "Alice's Adventures in Wonderland",
@@ -146,47 +262,21 @@ BOOKS = {
     159: "The Island of Doctor Moreau",
     164: "Twenty Thousand Leagues under the Sea",
     345: "Dracula",
-    68283: "The Call of Cthulhu"
+    68283: "The Call of Cthulhu",
 }
 
-def similar(book_id):
-    texts = []
-    id = []
-    # Collecter les textes
-    for t in BOOKS:
-        text = downclean(t)
-        if text:
-            texts.append(text)
-            id.append(t)
-
-    # Vectoriser
-    vectorizer = TfidfVectorizer()
-    matrix = vectorizer.fit_transform(texts)
-    idx = id.index(book_id)
-    scores = cosine_similarity(matrix[idx], matrix).flatten()
-    ranked = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
-
-    result = []
-    for i in ranked:
-        if id[i] != book_id:
-            result.append(BOOKS[id[i]])
-        if len(result) == 5:
-            break
-    return result
 
 def card(book_id):
     response = requests.get(f"https://gutendex.com/books/{book_id}")
+    if response.status_code != 200:
+        return None
     data = response.json()
 
     authors = data["authors"][0]["name"] if data["authors"] else "Unknown"
     bookshelves = ", ".join(data["bookshelves"])
 
     return {
-        "info": {
-            "id": str(book_id),
-            "authors": authors,
-            "bookshelves": bookshelves
-        },
+        "info": {"id": str(book_id), "authors": authors, "bookshelves": bookshelves},
         "lexdiv": lexdiv(book_id),
         "topics": topics(book_id),
         "entities": entities(book_id),
@@ -200,7 +290,7 @@ if args.lexdiv:
 
 elif args.topics:
     print(topics(args.topics))
-    
+
 elif args.entities:
     print(entities(args.entities))
 
@@ -209,7 +299,6 @@ elif args.summarize:
 
 elif args.similar:
     print(similar(args.similar))
-   
+
 elif args.card:
     print(card(args.card))
-

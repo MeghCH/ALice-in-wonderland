@@ -103,31 +103,25 @@ def lexdiv(book_id):
 
 
 def split_into_sections(text):
+    import re
+
     sections = []
     current_section = []
 
-    chapter_patterns = [
-        "CHAPTER",
-        "Chapter",
-        "CHAP.",
-        "Chap.",
-        "SCENE",
-        "Scene",
-        "SC.",
-        "Sc.",
-        "BOOK",
-        "Book",
-        "PART",
-        "Part",
-        "SECTION",
-        "Section",
-        "ACT",
-        "Act",
-    ]
+    section_pattern = re.compile(
+        r"^\s*"
+        r"(?:CHAPTER|Chapter|CHAP\.|Chap\.|SCENE|Scene|SC\.|Sc\.|BOOK|Book|PART|Part|SECTION|Section|ACT|Act|Chapitre|Livre|Partie|Scène|Acte)"
+        r"\s+[IVXLCDMivxlcdm0-9]+"  # Roman numerals or numbers
+        r"|^[IVXLCDMivxlcdm]+\s*"  # Standalone Roman numerals
+        r"|^\d+\s*"  # Standalone numbers
+        r"|^First|Second|Third|Fourth|Fifth|Sixth|Seventh|Eighth|Ninth|Tenth"
+        r"\s+Part"
+        r"\s*$"
+    )
 
     for line in text.split("\n"):
         line = line.strip()
-        if line and any(line.startswith(pattern) for pattern in chapter_patterns):
+        if line and section_pattern.match(line):
             if current_section:
                 sections.append(" ".join(current_section))
                 current_section = []
@@ -154,7 +148,7 @@ def topics(book_id):
         sections = split_into_sections(text)
         result = {}
 
-        for i, section in enumerate(sections[:10]):
+        for i, section in enumerate(sections):
             tokens = nltk.word_tokenize(section.lower())
             stop_words = set(nltk.corpus.stopwords.words("english"))
             tokens = [t for t in tokens if t.isalpha() and t not in stop_words]
@@ -221,9 +215,7 @@ def entities(book_id):
             characters = set()
             locations = set()
 
-            for sentence in sentences[
-                :100
-            ]:  # Limit to first 100 sentences for performance
+            for sentence in sentences:
                 for chunk in nltk.ne_chunk(nltk.pos_tag(nltk.word_tokenize(sentence))):
                     if hasattr(chunk, "label"):
                         if chunk.label() == "PERSON":
@@ -253,8 +245,6 @@ def summarize(book_id):
 
         try:
             sentences = nltk.sent_tokenize(text)
-            if len(sentences) > 100:
-                sentences = sentences[:100]
 
             word_freq = Counter()
             for sentence in sentences:

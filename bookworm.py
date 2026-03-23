@@ -2,21 +2,8 @@ import requests
 import os
 import argparse
 import json
-import nltk
 from collections import Counter
-import spacy
-from gensim import corpora
-from gensim.models import LdaModel
-from sumy.parsers.plaintext import PlaintextParser
-from sumy.nlp.tokenizers import Tokenizer
-from sumy.summarizers.text_rank import TextRankSummarizer
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-
-nltk.download("punkt")
-nltk.download("stopwords")
-nltk.download("wordnet")
-nltk.download("punkt_tab")
+import re
 
 STORAGE_DIR = "./storage"
 os.makedirs(STORAGE_DIR, exist_ok=True)
@@ -88,6 +75,10 @@ def load_or_compute(book_id, operation, compute_func):
 
 def lexdiv(book_id):
     def compute_lexdiv(book_id):
+        import nltk
+
+        nltk.download("punkt", quiet=True)
+
         text = downclean(book_id)
         if text is None:
             return None
@@ -104,6 +95,8 @@ def lexdiv(book_id):
         ttr = typ / tok
         mwl = sum(len(word) for word in tokens) / tok
         mwf = tok / typ
+
+        del tokens, counts
         return {"tok": tok, "typ": typ, "hap": hap, "ttr": ttr, "mwl": mwl, "mwf": mwf}
 
     return load_or_compute(book_id, "lexdiv", compute_lexdiv)
@@ -149,6 +142,11 @@ def split_into_sections(text):
 
 def topics(book_id):
     def compute_topics(book_id):
+        import nltk
+
+        nltk.download("punkt", quiet=True)
+        nltk.download("stopwords", quiet=True)
+
         text = downclean(book_id)
         if text is None:
             return None
@@ -165,6 +163,7 @@ def topics(book_id):
                 word_freq = Counter(tokens)
                 top_words = [word for word, _ in word_freq.most_common(10)]
                 result[i + 1] = top_words
+                del word_freq
 
         return result
 
@@ -173,6 +172,9 @@ def topics(book_id):
 
 def similar(book_id):
     def compute_similar(book_id):
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.metrics.pairwise import cosine_similarity
+
         texts = []
         id = []
 
@@ -194,6 +196,8 @@ def similar(book_id):
                 result.append(BOOKS[id[i]])
             if len(result) == 5:
                 break
+
+        del vectorizer, matrix, scores, ranked
         return result
 
     return load_or_compute(book_id, "similar", compute_similar)
@@ -201,26 +205,35 @@ def similar(book_id):
 
 def entities(book_id):
     def compute_entities(book_id):
+        import nltk
+
+        nltk.download("punkt", quiet=True)
+        nltk.download("maxent_ne_chunker", quiet=True)
+        nltk.download("words", quiet=True)
+        nltk.download("averaged_perceptron_tagger", quiet=True)
+
         text = downclean(book_id)
         if text is None:
             return None
 
         try:
-            import spacy
+            sentences = nltk.sent_tokenize(text)
+            characters = set()
+            locations = set()
 
-            nlp = spacy.load("en_core_web_sm")
-            nlp.max_length = 2000000
-            doc = nlp(text)
-            characters = []
-            locations = []
-            for ent in doc.ents:
-                if ent.label_ == "PERSON":
-                    characters.append(ent.text)
-                elif ent.label_ in ["GPE", "LOC"]:
-                    locations.append(ent.text)
+            for sentence in sentences[
+                :100
+            ]:  # Limit to first 100 sentences for performance
+                for chunk in nltk.ne_chunk(nltk.pos_tag(nltk.word_tokenize(sentence))):
+                    if hasattr(chunk, "label"):
+                        if chunk.label() == "PERSON":
+                            characters.update([c[0] for c in chunk.leaves()])
+                        elif chunk.label() in ["GPE", "LOCATION", "FACILITY"]:
+                            locations.update([c[0] for c in chunk.leaves()])
+
             return {
-                "characters": list(set(characters)),
-                "locations": list(set(locations)),
+                "characters": list(characters),
+                "locations": list(locations),
             }
         except:
             return {"characters": [], "locations": []}
@@ -230,13 +243,41 @@ def entities(book_id):
 
 def summarize(book_id):
     def compute_summarize(book_id):
+        import nltk
+
+        nltk.download("punkt", quiet=True)
+
         text = downclean(book_id)
         if text is None:
             return None
-        parser = PlaintextParser.from_string(text, Tokenizer("english"))
-        summarizer = TextRankSummarizer()
-        summary = summarizer(parser.document, sentences_count=5)
-        return " ".join([str(sentence) for sentence in summary])
+
+        try:
+            sentences = nltk.sent_tokenize(text)
+            if len(sentences) > 100:
+                sentences = sentences[:100]
+
+            word_freq = Counter()
+            for sentence in sentences:
+                words = nltk.word_tokenize(sentence.lower())
+                words = [w for w in words if w.isalpha()]
+                word_freq.update(words)
+
+            important_sentences = []
+            for sentence in sentences:
+                score = sum(
+                    word_freq[word.lower()]
+                    for word in nltk.word_tokenize(sentence)
+                    if word.isalpha()
+                )
+                important_sentences.append((score, sentence))
+
+            important_sentences.sort(reverse=True, key=lambda x: x[0])
+            summary = " ".join([s[1] for s in important_sentences[:5]])
+
+            del word_freq, important_sentences, sentences
+            return summary
+        except:
+            return "Summary unavailable"
 
     return load_or_compute(book_id, "summarize", compute_summarize)
 

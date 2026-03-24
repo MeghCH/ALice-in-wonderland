@@ -303,7 +303,7 @@ BOOKS = {
     159: "The Island of Doctor Moreau",
     164: "Twenty Thousand Leagues under the Sea",
     345: "Dracula",
-    68283: "The Call of Cthulhu",
+    68283: "The Call of Cthulhu"
 }
 
 

@@ -1,4 +1,6 @@
-requests==2.31.0
-nltk==3.8.1
-scikit-learn==1.3.0
-sumy==0.11.0
+sumy
+spacy
+scikit-learn
+numpy
+requests
+nltk

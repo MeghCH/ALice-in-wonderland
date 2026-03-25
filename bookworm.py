@@ -1,276 +1,42 @@
-import requests
-import os
 import argparse
 import json
-from collections import Counter
+import os
 import re
+import sys
+from collections import Counter
+from pathlib import Path
 
-STORAGE_DIR = "./storage"
-os.makedirs(STORAGE_DIR, exist_ok=True)
+import requests
+import spacy
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from sumy.nlp.tokenizers import Tokenizer
+from sumy.parsers.plaintext import PlaintextParser
+from sumy.summarizers.lex_rank import LexRankSummarizer
 
-
-def clean_text(text):
-    start = "*** START OF THE PROJECT GUTENBERG EBOOK"
-    end = "*** END OF THE PROJECT GUTENBERG EBOOK"
-
-    if start in text:
-        text = text.split(start)[1]
-    if end in text:
-        text = text.split(end)[0]
-
-    return text.strip()
-
-
-def downclean(book_id):
-    file_name = f"{book_id}.txt"
-    # Si le fichier existe -> lire depuis le disque
-    if os.path.exists(file_name):
-        with open(file_name, "r") as f:
-            return f.read()
-    lien = requests.get(f"https://www.gutenberg.org/files/{book_id}/{book_id}-0.txt")
-    if lien.status_code == 200:
-        texte = clean_text(lien.text)
-        with open(file_name, "w") as f:
-            f.write(texte)
-        return texte
-
-    else:
-        lien_bis = requests.get(
-            f"https://www.gutenberg.org/files/{book_id}/{book_id}.txt"
-        )
-        if lien_bis.status_code == 200:
-            texte = clean_text(lien_bis.text)
-            with open(file_name, "w") as f:
-                f.write(texte)
-            return texte
-        else:
-            return None
+# --- Configuration & Auto-installation des modèles ---
+STORAGE_DIR = Path("./storage")
+STORAGE_DIR.mkdir(exist_ok=True)
 
 
-# CLI
-parser = argparse.ArgumentParser()
-parser.add_argument("--lexdiv", type=int)
-parser.add_argument("--topics", type=int)
-parser.add_argument("--entities", type=int)
-parser.add_argument("--summarize", type=int)
-parser.add_argument("--similar", type=int)
-parser.add_argument("--card", type=int)
-args = parser.parse_args()
+def ensure_models():
+    """Vérifie et télécharge les modèles manquants au runtime."""
+    # Check spaCy
+    if not spacy.util.is_package("en_core_web_sm"):
+        print("Téléchargement du modèle spaCy (12MB)...", file=sys.stderr)
+        os.system("python -m spacy download en_core_web_sm")
 
+    # Check NLTK (requis par Sumy)
+    import nltk
 
-def get_storage_path(book_id, operation):
-    return os.path.join(STORAGE_DIR, f"{book_id}_{operation}.json")
-
-
-def load_or_compute(book_id, operation, compute_func):
-    storage_path = get_storage_path(book_id, operation)
-    if os.path.exists(storage_path):
-        with open(storage_path, "r") as f:
-            return json.load(f)
-    result = compute_func(book_id)
-    with open(storage_path, "w") as f:
-        json.dump(result, f)
-    return result
-
-
-def lexdiv(book_id):
-    def compute_lexdiv(book_id):
-        import nltk
-
+    try:
+        nltk.data.find("tokenizers/punkt")
+    except LookupError:
         nltk.download("punkt", quiet=True)
 
-        text = downclean(book_id)
-        if text is None:
-            return None
-        tokens = nltk.word_tokenize(text)
-        tokens = [t for t in tokens if t.isalpha()]
-        tokens = [t.lower() for t in tokens]
-        tok = len(tokens)
-        typ = len(set(tokens))
-        counts = Counter(tokens)
-        hap = 0
-        for word in counts:
-            if counts[word] == 1:
-                hap += 1
-        ttr = typ / tok
-        mwl = sum(len(word) for word in tokens) / tok
-        mwf = tok / typ
 
-        del tokens, counts
-        return {"tok": tok, "typ": typ, "hap": hap, "ttr": ttr, "mwl": mwl, "mwf": mwf}
-
-    return load_or_compute(book_id, "lexdiv", compute_lexdiv)
-
-
-def split_into_sections(text):
-    import re
-
-    sections = []
-    current_section = []
-
-    section_pattern = re.compile(
-        r"^\s*"
-        r"(?:CHAPTER|Chapter|CHAP\.|Chap\.|SCENE|Scene|SC\.|Sc\.|BOOK|Book|PART|Part|SECTION|Section|ACT|Act|Chapitre|Livre|Partie|Scène|Acte)"
-        r"\s+[IVXLCDMivxlcdm0-9]+"  # Roman numerals or numbers
-        r"|^[IVXLCDMivxlcdm]+\s*"  # Standalone Roman numerals
-        r"|^\d+\s*"  # Standalone numbers
-        r"|^First|Second|Third|Fourth|Fifth|Sixth|Seventh|Eighth|Ninth|Tenth"
-        r"\s+Part"
-        r"\s*$"
-    )
-
-    for line in text.split("\n"):
-        line = line.strip()
-        if line and section_pattern.match(line):
-            if current_section:
-                sections.append(" ".join(current_section))
-                current_section = []
-        elif line:
-            current_section.append(line)
-
-    if current_section:
-        sections.append(" ".join(current_section))
-
-    return sections if sections else [text]
-
-
-def topics(book_id):
-    def compute_topics(book_id):
-        import nltk
-
-        nltk.download("punkt", quiet=True)
-        nltk.download("stopwords", quiet=True)
-
-        text = downclean(book_id)
-        if text is None:
-            return None
-
-        sections = split_into_sections(text)
-        result = {}
-
-        for i, section in enumerate(sections):
-            tokens = nltk.word_tokenize(section.lower())
-            stop_words = set(nltk.corpus.stopwords.words("english"))
-            tokens = [t for t in tokens if t.isalpha() and t not in stop_words]
-
-            if tokens:
-                word_freq = Counter(tokens)
-                top_words = [word for word, _ in word_freq.most_common(10)]
-                result[i + 1] = top_words
-                del word_freq
-
-        return result
-
-    return load_or_compute(book_id, "topics", compute_topics)
-
-
-def similar(book_id):
-    def compute_similar(book_id):
-        from sklearn.feature_extraction.text import TfidfVectorizer
-        from sklearn.metrics.pairwise import cosine_similarity
-
-        texts = []
-        id = []
-
-        for t in BOOKS:
-            text = downclean(t)
-            if text:
-                texts.append(text)
-                id.append(t)
-
-        vectorizer = TfidfVectorizer()
-        matrix = vectorizer.fit_transform(texts)
-        idx = id.index(book_id)
-        scores = cosine_similarity(matrix[idx], matrix).flatten()
-        ranked = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
-
-        result = []
-        for i in ranked:
-            if id[i] != book_id:
-                result.append(BOOKS[id[i]])
-            if len(result) == 5:
-                break
-
-        del vectorizer, matrix, scores, ranked
-        return result
-
-    return load_or_compute(book_id, "similar", compute_similar)
-
-
-def entities(book_id):
-    def compute_entities(book_id):
-        import nltk
-
-        nltk.download("punkt", quiet=True)
-        nltk.download("maxent_ne_chunker", quiet=True)
-        nltk.download("words", quiet=True)
-        nltk.download("averaged_perceptron_tagger", quiet=True)
-
-        text = downclean(book_id)
-        if text is None:
-            return None
-
-        try:
-            sentences = nltk.sent_tokenize(text)
-            characters = set()
-            locations = set()
-
-            for sentence in sentences:
-                for chunk in nltk.ne_chunk(nltk.pos_tag(nltk.word_tokenize(sentence))):
-                    if hasattr(chunk, "label"):
-                        if chunk.label() == "PERSON":
-                            characters.update([c[0] for c in chunk.leaves()])
-                        elif chunk.label() in ["GPE", "LOCATION", "FACILITY"]:
-                            locations.update([c[0] for c in chunk.leaves()])
-
-            return {
-                "characters": list(characters),
-                "locations": list(locations),
-            }
-        except:
-            return {"characters": [], "locations": []}
-
-    return load_or_compute(book_id, "entities", compute_entities)
-
-
-def summarize(book_id):
-    def compute_summarize(book_id):
-        import nltk
-
-        nltk.download("punkt", quiet=True)
-
-        text = downclean(book_id)
-        if text is None:
-            return None
-
-        try:
-            sentences = nltk.sent_tokenize(text)
-
-            word_freq = Counter()
-            for sentence in sentences:
-                words = nltk.word_tokenize(sentence.lower())
-                words = [w for w in words if w.isalpha()]
-                word_freq.update(words)
-
-            important_sentences = []
-            for sentence in sentences:
-                score = sum(
-                    word_freq[word.lower()]
-                    for word in nltk.word_tokenize(sentence)
-                    if word.isalpha()
-                )
-                important_sentences.append((score, sentence))
-
-            important_sentences.sort(reverse=True, key=lambda x: x[0])
-            summary = " ".join([s[1] for s in important_sentences[:5]])
-
-            del word_freq, important_sentences, sentences
-            return summary
-        except:
-            return "Summary unavailable"
-
-    return load_or_compute(book_id, "summarize", compute_summarize)
-
+ensure_models()
+NLP = spacy.load("en_core_web_sm", disable=["lemmatizer", "textcat"])
 
 BOOKS = {
     11: "Alice's Adventures in Wonderland",
@@ -289,47 +55,189 @@ BOOKS = {
     70114: "The Big Four",
     35: "The Time Machine",
     36: "The War of the Worlds",
-    84: "Frankenstein; Or, The Modern Prometheus",
+    84: "Frankenstein",
     159: "The Island of Doctor Moreau",
     164: "Twenty Thousand Leagues under the Sea",
     345: "Dracula",
     68283: "The Call of Cthulhu",
 }
 
+# --- Fonctions de traitement ---
 
-def card(book_id):
-    response = requests.get(f"https://gutendex.com/books/{book_id}")
-    if response.status_code != 200:
-        return None
-    data = response.json()
 
-    authors = data["authors"][0]["name"] if data["authors"] else "Unknown"
-    bookshelves = ", ".join(data["bookshelves"])
+def clean_gutenberg_text(text):
+    start_pattern = r"\*\*\* START OF (?:THE|THIS) PROJECT GUTENBERG EBOOK.*?\*\*\*"
+    end_pattern = r"\*\*\* END OF (?:THE|THIS) PROJECT GUTENBERG EBOOK.*?\*\*\*"
 
+    text = re.split(start_pattern, text, flags=re.IGNORECASE)[-1]
+    text = re.split(end_pattern, text, flags=re.IGNORECASE)[0]
+    return text.strip()
+
+
+def get_book_text(book_id):
+    local_path = STORAGE_DIR / f"{book_id}.txt"
+    if local_path.exists():
+        return local_path.read_text(encoding="utf-8")
+
+    urls = [
+        f"https://www.gutenberg.org/files/{book_id}/{book_id}-0.txt",
+        f"https://www.gutenberg.org/files/{book_id}/{book_id}.txt",
+        f"https://www.gutenberg.org/cache/epub/{book_id}/pg{book_id}.txt",
+    ]
+
+    for url in urls:
+        try:
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                text = clean_gutenberg_text(resp.text)
+                local_path.write_text(text, encoding="utf-8")
+                return text
+        except requests.RequestException:
+            continue
+    return None
+
+
+def get_lexdiv(text):
+    # Analyse sur un échantillon pour rester ultra-léger
+    doc = NLP(text[:100000])
+    tokens = [t.text.lower() for t in doc if t.is_alpha]
+    if not tokens:
+        return {}
+
+    counts = Counter(tokens)
     return {
-        "info": {"id": str(book_id), "authors": authors, "bookshelves": bookshelves},
-        "lexdiv": lexdiv(book_id),
-        "topics": topics(book_id),
-        "entities": entities(book_id),
-        "summary": summarize(book_id),
-        "similar": similar(book_id),
+        "tokens": len(tokens),
+        "unique": len(counts),
+        "ttr": round(len(counts) / len(tokens), 4),
+        "avg_word_len": round(sum(len(w) for w in tokens) / len(tokens), 2),
     }
 
 
-if args.lexdiv:
-    print(lexdiv(args.lexdiv))
+def get_entities(text):
+    doc = NLP(text[:150000])  # Limite pour la RAM
+    chars = Counter([ent.text for ent in doc.ents if ent.label_ == "PERSON"])
+    locs = Counter([ent.text for ent in doc.ents if ent.label_ in ["GPE", "LOC"]])
 
-elif args.topics:
-    print(topics(args.topics))
+    return {
+        "characters": [name for name, count in chars.most_common(15)],
+        "locations": [name for name, count in locs.most_common(10)],
+    }
 
-elif args.entities:
-    print(entities(args.entities))
 
-elif args.summarize:
-    print(summarize(args.summarize))
+def get_summary(text):
+    parser = PlaintextParser.from_string(text, Tokenizer("english"))
+    summarizer = LexRankSummarizer()
+    # On prend les 5 phrases les plus importantes
+    summary = summarizer(parser.document, 5)
+    return " ".join([str(s) for s in summary])
 
-elif args.similar:
-    print(similar(args.similar))
 
-elif args.card:
-    print(card(args.card))
+def get_similar(book_id):
+    book_id = int(book_id)
+    texts, ids = [], []
+    for bid in BOOKS:
+        t = get_book_text(bid)
+        if t:
+            texts.append(t[:30000])  # Petit échantillon pour TF-IDF
+            ids.append(bid)
+
+    if book_id not in ids:
+        return []
+
+    vectorizer = TfidfVectorizer(stop_words="english")
+    matrix = vectorizer.fit_transform(texts)
+    idx = ids.index(book_id)
+
+    sims = cosine_similarity(matrix[idx], matrix).flatten()
+    related = sims.argsort()[::-1]
+
+    return [BOOKS[ids[i]] for i in related if ids[i] != book_id][:5]
+
+
+def generate_card(book_id):
+    text = get_book_text(book_id)
+    if not text:
+        return {"error": f"Livre {book_id} introuvable."}
+
+    return {
+        "info": {"id": book_id, "title": BOOKS.get(int(book_id), "Inconnu")},
+        "lexical": get_lexdiv(text),
+        "entities": get_entities(text),
+        "summary": get_summary(text),
+        "similar": get_similar(book_id),
+    }
+
+
+# --- CLI ---
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+
+    # Define actions
+    parser.add_argument(
+        "--summarize",
+        type=int,
+        dest="summarize_id",
+        help="Summarize the book with the given ID",
+    )
+    parser.add_argument(
+        "--lexical",
+        type=int,
+        dest="lexical_id",
+        help="Perform lexical analysis on the book with the given ID",
+    )
+    parser.add_argument(
+        "--entities",
+        type=int,
+        dest="entities_id",
+        help="Extract entities from the book with the given ID",
+    )
+    parser.add_argument(
+        "--similar",
+        type=int,
+        dest="similar_id",
+        help="Find similar books to the book with the given ID",
+    )
+    parser.add_argument(
+        "--card",
+        type=int,
+        dest="card_id",
+        help="Generate a full analysis card for the book with the given ID",
+    )
+
+    args = parser.parse_args()
+
+    # Determine which action to perform
+    if args.summarize_id is not None:
+        book_id = args.summarize_id
+        action = "summarize"
+    elif args.lexical_id is not None:
+        book_id = args.lexical_id
+        action = "lexical"
+    elif args.entities_id is not None:
+        book_id = args.entities_id
+        action = "entities"
+    elif args.similar_id is not None:
+        book_id = args.similar_id
+        action = "similar"
+    elif args.card_id is not None:
+        book_id = args.card_id
+        action = "card"
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+    text_data = get_book_text(book_id)
+    if not text_data:
+        print(f"Erreur : Impossible de récupérer le texte pour l'ID {book_id}")
+        sys.exit(1)
+
+    if action == "summarize":
+        print(get_summary(text_data))
+    elif action == "lexical":
+        print(json.dumps(get_lexdiv(text_data), indent=2))
+    elif action == "entities":
+        print(json.dumps(get_entities(text_data), indent=2))
+    elif action == "similar":
+        print(get_similar(book_id))
+    elif action == "card":
+        print(json.dumps(generate_card(book_id), indent=2))

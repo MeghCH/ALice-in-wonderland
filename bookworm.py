@@ -12,7 +12,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sumy.nlp.tokenizers import Tokenizer
 from sumy.parsers.plaintext import PlaintextParser
-from sumy.summarizers.lex_rank import LexRankSummarizer
+from sumy.summarizers.lsa import LsaSummarizer
 
 # --- Configuration & Auto-installation des modèles ---
 STORAGE_DIR = Path("./storage")
@@ -26,13 +26,17 @@ def ensure_models():
         print("Téléchargement du modèle spaCy (12MB)...", file=sys.stderr)
         os.system("python -m spacy download en_core_web_sm")
 
-    # Check NLTK (requis par Sumy)
     import nltk
 
-    try:
-        nltk.data.find("tokenizers/punkt")
-    except LookupError:
-        nltk.download("punkt", quiet=True)
+    # On vérifie punkt et punkt_tab (nécessaire pour les versions récentes)
+    for resource in ["punkt", "punkt_tab"]:
+        try:
+            nltk.data.find(f"tokenizers/{resource}")
+        except LookupError:
+            print(
+                f"Téléchargement de la ressource NLTK : {resource}...", file=sys.stderr
+            )
+            nltk.download(resource, quiet=True)
 
 
 ensure_models()
@@ -59,7 +63,7 @@ BOOKS = {
     159: "The Island of Doctor Moreau",
     164: "Twenty Thousand Leagues under the Sea",
     345: "Dracula",
-    68283: "The Call of Cthulhu"
+    68283: "The Call of Cthulhu",
 }
 
 # --- Fonctions de traitement ---
@@ -69,7 +73,8 @@ def clean_gutenberg_text(text):
     start_pattern = r"\*\*\* START OF (?:THE|THIS) PROJECT GUTENBERG EBOOK.*?\*\*\*"
     end_pattern = r"\*\*\* END OF (?:THE|THIS) PROJECT GUTENBERG EBOOK.*?\*\*\*"
 
-    text = re.split(start_pattern, text, flags=re.IGNORECASE)[-1]
+    text_parts = re.split(start_pattern, text, flags=re.IGNORECASE)
+    text = text_parts[-1]
     text = re.split(end_pattern, text, flags=re.IGNORECASE)[0]
     return text.strip()
 
@@ -98,18 +103,24 @@ def get_book_text(book_id):
 
 
 def get_lexdiv(text):
-    # Analyse sur un échantillon pour rester ultra-léger
+    # Analyse sur un échantillon pour la performance (ou texte entier selon tes ressources)
     doc = NLP(text[:100000])
     tokens = [t.text.lower() for t in doc if t.is_alpha]
+
     if not tokens:
         return {}
 
     counts = Counter(tokens)
+    tok = len(tokens)
+    typ = len(counts)
+
     return {
-        "tokens": len(tokens),
-        "unique": len(counts),
-        "ttr": round(len(counts) / len(tokens), 4),
-        "avg_word_len": round(sum(len(w) for w in tokens) / len(tokens), 2),
+        "tok": tok,
+        "typ": typ,
+        "hap": len([w for w, c in counts.items() if c == 1]),
+        "ttr": round(typ / tok, 4),
+        "mwl": round(sum(len(w) for w in tokens) / tok, 2),
+        "mwf": round(tok / typ, 2),
     }
 
 
@@ -124,11 +135,15 @@ def get_entities(text):
     }
 
 
-def get_summary(text):
-    parser = PlaintextParser.from_string(text, Tokenizer("english"))
-    summarizer = LexRankSummarizer()
-    # On prend les 5 phrases les plus importantes
-    summary = summarizer(parser.document, 5)
+def get_summary(text, sentences_count=5):
+    """Résumé via Sumy (LSA Summarizer)."""
+    # On nettoie les sauts de lignes multiples pour aider le tokenizer
+    clean_text = " ".join(text.split())
+
+    parser = PlaintextParser.from_string(clean_text, Tokenizer("english"))
+    summarizer = LsaSummarizer()
+
+    summary = summarizer(parser.document, sentences_count)
     return " ".join([str(s) for s in summary])
 
 
@@ -138,7 +153,7 @@ def get_similar(book_id):
     for bid in BOOKS:
         t = get_book_text(bid)
         if t:
-            texts.append(t[:30000])  # Petit échantillon pour TF-IDF
+            texts.append(t[:30000])  # Échantillon pour TF-IDF
             ids.append(bid)
 
     if book_id not in ids:
@@ -161,7 +176,7 @@ def generate_card(book_id):
 
     return {
         "info": {"id": book_id, "title": BOOKS.get(int(book_id), "Inconnu")},
-        "lexical": get_lexdiv(text),
+        "lexdiv": get_lexdiv(text),
         "entities": get_entities(text),
         "summary": get_summary(text),
         "similar": get_similar(book_id),
@@ -170,61 +185,25 @@ def generate_card(book_id):
 
 # --- CLI ---
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Analyseur de livres Gutenberg")
+    group = parser.add_mutually_exclusive_group(required=True)
 
-    # Define actions
-    parser.add_argument(
-        "--summarize",
-        type=int,
-        dest="summarize_id",
-        help="Summarize the book with the given ID",
-    )
-    parser.add_argument(
-        "--lexical",
-        type=int,
-        dest="lexical_id",
-        help="Perform lexical analysis on the book with the given ID",
-    )
-    parser.add_argument(
-        "--entities",
-        type=int,
-        dest="entities_id",
-        help="Extract entities from the book with the given ID",
-    )
-    parser.add_argument(
-        "--similar",
-        type=int,
-        dest="similar_id",
-        help="Find similar books to the book with the given ID",
-    )
-    parser.add_argument(
-        "--card",
-        type=int,
-        dest="card_id",
-        help="Generate a full analysis card for the book with the given ID",
-    )
+    group.add_argument("--summarize", type=int, help="ID du livre à résumer")
+    group.add_argument("--lexdiv", type=int, help="Analyse lexicale")
+    group.add_argument("--entities", type=int, help="Extraction d'entités")
+    group.add_argument("--similar", type=int, help="Trouver des livres similaires")
+    group.add_argument("--card", type=int, help="Générer une fiche complète")
 
     args = parser.parse_args()
 
-    # Determine which action to perform
-    if args.summarize_id is not None:
-        book_id = args.summarize_id
-        action = "summarize"
-    elif args.lexical_id is not None:
-        book_id = args.lexical_id
-        action = "lexical"
-    elif args.entities_id is not None:
-        book_id = args.entities_id
-        action = "entities"
-    elif args.similar_id is not None:
-        book_id = args.similar_id
-        action = "similar"
-    elif args.card_id is not None:
-        book_id = args.card_id
-        action = "card"
-    else:
-        parser.print_help()
-        sys.exit(1)
+    # Déterminer l'action
+    action = None
+    book_id = None
+    for key, value in vars(args).items():
+        if value is not None:
+            action = key.replace("_id", "")  # Normalisation du nom de l'action
+            book_id = value
+            break
 
     text_data = get_book_text(book_id)
     if not text_data:
@@ -233,7 +212,7 @@ if __name__ == "__main__":
 
     if action == "summarize":
         print(get_summary(text_data))
-    elif action == "lexical":
+    elif action == "lexdiv":
         print(json.dumps(get_lexdiv(text_data), indent=2))
     elif action == "entities":
         print(json.dumps(get_entities(text_data), indent=2))

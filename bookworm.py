@@ -102,13 +102,32 @@ def fetch_and_save_text(urls, local_path):
 
 def get_book_text(book_id):
     """Récupère le texte d'un livre depuis le cache ou le télécharge."""
+    if book_id not in BOOKS:
+        print(
+            f"Erreur: Le livre avec l'ID {book_id} n'est pas supporté.", file=sys.stderr
+        )
+        print(f"Liste des IDs supportés: {list(BOOKS.keys())}", file=sys.stderr)
+        return None
+
     storage_file = STORAGE_DIR / f"{book_id}.txt"
     if storage_file.exists():
-        return storage_file.read_text()
+        try:
+            return storage_file.read_text()
+        except Exception as e:
+            print(
+                f"Erreur lors de la lecture du fichier en cache pour le livre {book_id}: {e}",
+                file=sys.stderr,
+            )
+            return None
 
     # URL de base pour les livres Gutenberg
     base_url = f"https://www.gutenberg.org/files/{book_id}/{book_id}-0.txt"
     text = fetch_and_save_text([base_url], storage_file)
+    if not text:
+        print(
+            f"Erreur: Impossible de télécharger le texte pour le livre ID {book_id}",
+            file=sys.stderr,
+        )
     return text
 
 
@@ -204,10 +223,20 @@ def get_similar(book_id, use_cache=True):
     """Recommandation (Top 5)[cite: 58]."""
     cache_file = CACHE_DIR / f"{book_id}_similar.json"
     if use_cache and cache_file.exists():
-        return json.loads(cache_file.read_text())
+        try:
+            return json.loads(cache_file.read_text())
+        except Exception as e:
+            print(
+                f"Erreur lors de la lecture du cache pour les livres similaires: {e}",
+                file=sys.stderr,
+            )
 
     ids = list(BOOKS.keys())
     if book_id not in ids:
+        print(
+            f"Erreur: Le livre ID {book_id} n'est pas dans la liste des livres supportés",
+            file=sys.stderr,
+        )
         return []
     texts = [get_book_text(bid) or "" for bid in ids]
     texts = [text[:30000] if text else "" for text in texts]
@@ -225,7 +254,11 @@ def generate_card(book_id):
     """Génère la fiche complète demandée [cite: 69-82]."""
     text = get_book_text(book_id)
     if not text:
-        return {"error": "Inconnu"}
+        print(
+            f"Erreur: Impossible de générer la fiche pour le livre ID {book_id}",
+            file=sys.stderr,
+        )
+        return {"error": "Livre non trouvé ou impossible à charger"}
     return {
         "info": {"id": str(book_id), "title": BOOKS.get(book_id)},
         "lexdiv": get_lexdiv(text, book_id),
@@ -249,6 +282,14 @@ if __name__ == "__main__":
 
     txt = get_book_text(bid)
     if not txt:
+        print(
+            f"Erreur: Impossible d'obtenir le texte pour le livre ID {bid}",
+            file=sys.stderr,
+        )
+        print(
+            "Vérifiez que l'ID est valide et que vous avez une connexion internet.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     mapping = {

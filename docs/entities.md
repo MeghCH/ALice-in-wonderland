@@ -1,5 +1,5 @@
 ```mermaid
-graph TD
+flowchart TD
     A[Texte Nettoyé - 150k chars] --> B[SpaCy: Analyse NER]
     B --> C{Filtrage par Label}
     C -- PERSON --> D[Extraction Personnages]

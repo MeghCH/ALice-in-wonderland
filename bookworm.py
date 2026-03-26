@@ -6,8 +6,10 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+import numpy as np
 import requests
 import spacy
+from requests.exceptions import RequestException
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
@@ -18,7 +20,9 @@ from sumy.summarizers.lsa import LsaSummarizer
 
 # --- Configuration & Auto-installation ---
 STORAGE_DIR = Path("./storage")
+CACHE_DIR = Path("./cache")
 STORAGE_DIR.mkdir(exist_ok=True)
+CACHE_DIR.mkdir(exist_ok=True)
 
 
 def ensure_models():
@@ -77,36 +81,69 @@ def clean_gutenberg_text(text):
     return text.strip()
 
 
-def get_book_text(book_id):
-    local_path = STORAGE_DIR / f"{book_id}.txt"
-    if local_path.exists():
-        return local_path.read_text(encoding="utf-8")
-
-    urls = [
-        f"https://www.gutenberg.org/cache/epub/{book_id}/pg{book_id}.txt",
-        f"https://www.gutenberg.org/files/{book_id}/{book_id}-0.txt",
-    ]
+def fetch_and_save_text(urls, local_path):
     for url in urls:
         try:
             resp = requests.get(url, timeout=10)
-            if resp.status_code == 200:
-                text = clean_gutenberg_text(resp.text)
-                local_path.write_text(text, encoding="utf-8")
-                return text
-        except:
+            resp.raise_for_status()
+
+            text = clean_gutenberg_text(resp.text)
+
+            local_path.write_text(text, encoding="utf-8")
+
+            return text
+
+        except RequestException as e:
+            print(f"Erreur lors de l'accès à {url} : {e}")
             continue
+
     return None
 
 
-def get_lexdiv(text):
+def get_book_text(book_id):
+    """Récupère le texte d'un livre depuis le cache ou le télécharge."""
+    if book_id not in BOOKS:
+        print(
+            f"Erreur: Le livre avec l'ID {book_id} n'est pas supporté.", file=sys.stderr
+        )
+        print(f"Liste des IDs supportés: {list(BOOKS.keys())}", file=sys.stderr)
+        return None
+
+    storage_file = STORAGE_DIR / f"{book_id}.txt"
+    if storage_file.exists():
+        try:
+            return storage_file.read_text()
+        except Exception as e:
+            print(
+                f"Erreur lors de la lecture du fichier en cache pour le livre {book_id}: {e}",
+                file=sys.stderr,
+            )
+            return None
+
+    # URL de base pour les livres Gutenberg
+    base_url = f"https://www.gutenberg.org/files/{book_id}/{book_id}-0.txt"
+    text = fetch_and_save_text([base_url], storage_file)
+    if not text:
+        print(
+            f"Erreur: Impossible de télécharger le texte pour le livre ID {book_id}",
+            file=sys.stderr,
+        )
+    return text
+
+
+def get_lexdiv(text, book_id, use_cache=True):
     """Analyse lexicale selon la nomenclature Epitech [cite: 21-35]."""
+    cache_file = CACHE_DIR / f"{book_id}_lexdiv.json"
+    if use_cache and cache_file.exists():
+        return json.loads(cache_file.read_text())
+
     doc = NLP(text[:100000])
     tokens = [t.text.lower() for t in doc if t.is_alpha]
     if not tokens:
         return {}
     counts = Counter(tokens)
     tok, typ = len(tokens), len(counts)
-    return {
+    result = {
         "tok": tok,
         "typ": typ,
         "hap": len([w for w, c in counts.items() if c == 1]),
@@ -114,10 +151,16 @@ def get_lexdiv(text):
         "mwl": round(sum(len(w) for w in tokens) / tok, 2),
         "mwf": round(tok / typ, 2),
     }
+    cache_file.write_text(json.dumps(result))
+    return result
 
 
-def get_topics(text):
+def get_topics(text, book_id, use_cache=True):
     """Extraction des 10 mots clés par section."""
+    cache_file = CACHE_DIR / f"{book_id}_topics.json"
+    if use_cache and cache_file.exists():
+        return json.loads(cache_file.read_text())
+
     # Découpage par chapitre (cas classique Gutenberg)
     sections = re.split(r"\bCHAPTER [IVXLCDM\d]+\b", text, flags=re.IGNORECASE)
     sections = [s.strip() for s in sections if len(s.strip()) > 500]
@@ -131,53 +174,97 @@ def get_topics(text):
     feature_names = vectorizer.get_feature_names_out()
 
     result = {}
-    for i, row in enumerate(tfidf_matrix):
-        top_indices = row.toarray().flatten().argsort()[-10:][::-1]
+    # Convert sparse matrix to dense array
+    if hasattr(tfidf_matrix, "toarray"):
+        dense_matrix = tfidf_matrix.toarray()  # type: ignore
+    else:
+        dense_matrix = np.array(tfidf_matrix)
+
+    for i in range(len(sections)):
+        row_array = dense_matrix[i]
+        top_indices = np.argsort(row_array)[-10:][::-1]
         result[i + 1] = [feature_names[idx] for idx in top_indices]
+
+    cache_file.write_text(json.dumps(result))
     return result
 
 
-def get_entities(text):
+def get_entities(text, book_id, use_cache=True):
     """Extraction personnages et lieux[cite: 46]."""
+    cache_file = CACHE_DIR / f"{book_id}_entities.json"
+    if use_cache and cache_file.exists():
+        return json.loads(cache_file.read_text())
+
     doc = NLP(text[:150000])
     chars = Counter([ent.text for ent in doc.ents if ent.label_ == "PERSON"])
     locs = Counter([ent.text for ent in doc.ents if ent.label_ in ["GPE", "LOC"]])
-    return {
+    result = {
         "characters": [name for name, count in chars.most_common(15)],
         "locations": [name for name, count in locs.most_common(10)],
     }
+    cache_file.write_text(json.dumps(result))
+    return result
 
 
-def get_summary(text):
+def get_summary(text, book_id, use_cache=True):
     """Résumé via Sumy LSA[cite: 54]."""
+    cache_file = CACHE_DIR / f"{book_id}_summary.json"
+    if use_cache and cache_file.exists():
+        return cache_file.read_text()
+
     parser = PlaintextParser.from_string(" ".join(text.split()), Tokenizer("english"))
     summarizer = LsaSummarizer()
-    return " ".join([str(s) for s in summarizer(parser.document, 5)])
+    result = " ".join([str(s) for s in summarizer(parser.document, 5)])
+    cache_file.write_text(result)
+    return result
 
 
-def get_similar(book_id):
+def get_similar(book_id, use_cache=True):
     """Recommandation (Top 5)[cite: 58]."""
+    cache_file = CACHE_DIR / f"{book_id}_similar.json"
+    if use_cache and cache_file.exists():
+        try:
+            return json.loads(cache_file.read_text())
+        except Exception as e:
+            print(
+                f"Erreur lors de la lecture du cache pour les livres similaires: {e}",
+                file=sys.stderr,
+            )
+
     ids = list(BOOKS.keys())
-    texts = [get_book_text(bid)[:30000] or "" for bid in ids]
+    if book_id not in ids:
+        print(
+            f"Erreur: Le livre ID {book_id} n'est pas dans la liste des livres supportés",
+            file=sys.stderr,
+        )
+        return []
+    texts = [get_book_text(bid) or "" for bid in ids]
+    texts = [text[:30000] if text else "" for text in texts]
     vectorizer = TfidfVectorizer(stop_words="english")
     matrix = vectorizer.fit_transform(texts)
     idx = ids.index(book_id)
-    sims = cosine_similarity(matrix[idx], matrix).flatten()
+    sims = cosine_similarity(matrix[idx : idx + 1], matrix).flatten()
     related = sims.argsort()[::-1]
-    return [BOOKS[ids[i]] for i in related if ids[i] != book_id][:5]
+    result = [BOOKS[ids[i]] for i in related if ids[i] != book_id][:5]
+    cache_file.write_text(json.dumps(result))
+    return result
 
 
 def generate_card(book_id):
     """Génère la fiche complète demandée [cite: 69-82]."""
     text = get_book_text(book_id)
     if not text:
-        return {"error": "Inconnu"}
+        print(
+            f"Erreur: Impossible de générer la fiche pour le livre ID {book_id}",
+            file=sys.stderr,
+        )
+        return {"error": "Livre non trouvé ou impossible à charger"}
     return {
         "info": {"id": str(book_id), "title": BOOKS.get(book_id)},
-        "lexdiv": get_lexdiv(text),
-        "topics": get_topics(text),
-        "entities": get_entities(text),
-        "summary": get_summary(text),
+        "lexdiv": get_lexdiv(text, book_id),
+        "topics": get_topics(text, book_id),
+        "entities": get_entities(text, book_id),
+        "summary": get_summary(text, book_id),
         "similar": get_similar(book_id),
     }
 
@@ -195,13 +282,21 @@ if __name__ == "__main__":
 
     txt = get_book_text(bid)
     if not txt:
+        print(
+            f"Erreur: Impossible d'obtenir le texte pour le livre ID {bid}",
+            file=sys.stderr,
+        )
+        print(
+            "Vérifiez que l'ID est valide et que vous avez une connexion internet.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     mapping = {
-        "lexdiv": lambda t: get_lexdiv(t),
-        "topics": lambda t: get_topics(t),
-        "entities": lambda t: get_entities(t),
-        "summarize": lambda t: get_summary(t),
+        "lexdiv": lambda t: get_lexdiv(t, bid),
+        "topics": lambda t: get_topics(t, bid),
+        "entities": lambda t: get_entities(t, bid),
+        "summarize": lambda t: get_summary(t, bid),
         "similar": lambda _: get_similar(bid),
         "card": lambda _: generate_card(bid),
     }

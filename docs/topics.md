@@ -1,11 +1,11 @@
 ```mermaid
 flowchart TD
-    A[Texte Nettoyé] --> B[Regex: Split par 'CHAPTER']
-    B --> C[Sélection: 10 premières sections valides]
+    A[Cleaned Text] --> B[Regex: Split by “CHAPTER”]
+    B --> C[Selection: First 10 valid sections]
     C --> D[Sklearn: TfidfVectorizer]
-    D --> E[StopWords: Retrait des mots vides anglais]
-    E --> F[Calcul: Matrice de poids Terme-Document]
-    F --> G[Extraction: Top 10 indices par ligne]
-    G --> H[Mapping: Indices vers Mots]
-    H --> I[Résultat: Dictionnaire de thèmes]
+    D --> E[StopWords: Removal of English stop words]
+    E --> F[Calculation: Term-Document Weight Matrix]
+    F --> G[Extraction: Top 10 indices per line]
+    G --> H[Mapping: Indices to Words]
+    H --> I[Result: Thesis Dictionary]
 ```

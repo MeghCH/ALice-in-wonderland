@@ -1,11 +1,11 @@
 ```mermaid
 flowchart TD
-    A[Texte Brut Gutenberg] --> B[Nettoyage: Suppression Header/Footer]
+    A[Gutenberg Raw Text] --> B[Cleaning: Remove Header/Footer]
     B --> C[SpaCy: Tokenisation & Segmentation]
-    C --> D[Filtrage: is_alpha & lower_case]
-    D --> E[Calcul: Nombre total de mots - tok]
-    D --> F[Calcul: Nombre de mots uniques - typ]
-    F --> G[Calcul: Mots apparaissant 1 fois - hap]
+    C --> D[Filtering: is_alpha & lower_case]
+    D --> E[Calculation: Total number of words - tok]
+    D --> F[Calculation: Number of unique words - typ]
+    F --> G[Calculation: Words appearing once - hap]
     E & F --> H[Ratio: TTR - typ / tok]
-    H --> I[Résultat: JSON Lexdiv]
+    H --> I[Result: JSON Lexdiv]
 ``` 

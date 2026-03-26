@@ -1,12 +1,13 @@
 ```mermaid
 flowchart TD
-    A[Texte Nettoyé - 150k chars] --> B[SpaCy: Analyse NER]
-    B --> C{Filtrage par Label}
-    C -- PERSON --> D[Extraction Personnages]
-    C -- GPE/LOC --> E[Extraction Lieux]
-    D --> F[Counter: Agrégation des occurrences]
-    E --> G[Counter: Agrégation des occurrences]
-    F --> H[Sélection: Top 15]
-    G --> I[Sélection: Top 10]
-    H & I --> J[Résultat: JSON Entities]
+    A[Cleaned text - 150k characters] --> B[SpaCy: NER analysis]
+    B --> C{Filtering by label}
+    C -- PERSON --> D[Character extraction]
+    C -- GPE/LOC --> E [Place Extraction]
+    D --> F[Counter: Occurrence Aggregation]
+    E --> G[Counter: Occurrence Aggregation]
+    F --> H[Selection: Top 15]
+    G --> I[Selection: Top 10]
+    H & I --> J[Result: JSON Entities]
 ```
+
